@@ -76,9 +76,12 @@ def load_groups():       return _load(GROUPS_FILE, [])
 def save_groups(g):      _save(GROUPS_FILE, g)
 
 def seed_groups_if_needed():
-    """Inicializa a lista de grupos quando ela esta AUSENTE ou VAZIA.
-    Ordem: variavel SEED_GROUPS_JSON -> arquivo seed. Nao mexe se ja houver grupos."""
-    if load_groups():            # ja tem grupos reais -> nao semeia
+    """Inicializa a lista quando ela esta vazia. O grupo FONTE nunca conta como
+    destino (auto-cura listas onde ele entrou por engano). So semeia se, fora a
+    fonte, a lista estiver vazia."""
+    existing = [g for g in load_groups() if g.get("group_id") != SOURCE_CHAT_ID]
+    if existing:
+        save_groups(existing)    # remove a fonte se tiver entrado por engano
         return
     raw = os.environ.get("SEED_GROUPS_JSON")
     if raw:
@@ -130,8 +133,10 @@ def notify_admin(text):
 
 # ----------------------------------------------------------------- Registro de grupos
 def register_group(chat):
-    groups = load_groups()
     gid = chat["id"]
+    if gid == SOURCE_CHAT_ID:
+        return                    # o grupo fonte nunca vira destino
+    groups = load_groups()
     if any(g["group_id"] == gid for g in groups):
         return
     groups.append({
@@ -190,6 +195,8 @@ def broadcast(from_chat_id, message_id):
     sent = 0
     for g in list(groups):
         gid = g["group_id"]
+        if gid == SOURCE_CHAT_ID:
+            continue              # nunca ecoa de volta no grupo fonte
         params = {"chat_id": gid, "from_chat_id": from_chat_id, "message_id": message_id}
         if g.get("has_topics") and g.get("selected_thread_id"):
             params["message_thread_id"] = g["selected_thread_id"]
@@ -260,6 +267,8 @@ def handle(update, state):
     if msg.get("chat", {}).get("id") != SOURCE_CHAT_ID:
         return
     if msg.get("message_thread_id") != SOURCE_THREAD:
+        log.info("Msg no grupo fonte mas em outro topico (thread real=%s, esperado=%s)",
+                 msg.get("message_thread_id"), SOURCE_THREAD)
         return
     mid = msg["message_id"]
     if mid in state["seen"]:
