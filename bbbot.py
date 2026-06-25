@@ -24,6 +24,7 @@ import json
 import time
 import logging
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import requests
 
@@ -46,7 +47,7 @@ GROUPS_FILE = os.environ.get("GROUPS_FILE", "group_ids.json")
 STATE_FILE  = os.environ.get("STATE_FILE",  "bot_state.json")
 LOG_FILE    = os.environ.get("LOG_FILE",    "logBot.txt")
 
-SEND_DELAY        = 1.0           # s entre envios (folga no limite global ~30/s)
+SEND_DELAY        = float(os.environ.get("SEND_DELAY", "1.0"))  # s entre envios (folga no limite ~30/s)
 DETAILS_REFRESH_S = 24 * 3600     # atualizar metadados dos grupos 1x/dia
 MAX_SEEN          = 500           # quantos message_ids lembrar p/ dedup
 
@@ -75,9 +76,9 @@ def load_groups():       return _load(GROUPS_FILE, [])
 def save_groups(g):      _save(GROUPS_FILE, g)
 
 def seed_groups_if_needed():
-    """No 1o boot (volume /data vazio) inicializa a lista de grupos.
-    Ordem: variavel SEED_GROUPS_JSON -> arquivo seed -> vazio."""
-    if os.path.exists(GROUPS_FILE):
+    """Inicializa a lista de grupos quando ela esta AUSENTE ou VAZIA.
+    Ordem: variavel SEED_GROUPS_JSON -> arquivo seed. Nao mexe se ja houver grupos."""
+    if load_groups():            # ja tem grupos reais -> nao semeia
         return
     raw = os.environ.get("SEED_GROUPS_JSON")
     if raw:
@@ -163,12 +164,26 @@ def unregister_group(gid, reason=""):
 # ----------------------------------------------------------------- Distribuicao
 LINK_RE = re.compile(r"https?://\S+")
 
+# So distribui artigos destes dominios (separados por virgula via env).
+# Padrao: bitcoinblock.com.br -> evita postar qualquer link por engano nos grupos.
+ALLOWED_DOMAINS = [d.strip().lower() for d in
+                   os.environ.get("ALLOWED_DOMAINS", "bitcoinblock.com.br").split(",")
+                   if d.strip()]
+
+def _host_allowed(link):
+    """True so se o HOST do link for um dominio permitido (ou subdominio).
+    Bloqueia spoof tipo bitcoinblock.com.br.golpe.io."""
+    try:
+        host = (urlparse(link).hostname or "").lower().rstrip(".")
+    except Exception:
+        return False
+    return any(host == d or host.endswith("." + d) for d in ALLOWED_DOMAINS)
+
 def is_distributable(msg):
-    """So distribui mensagens do topico fonte que tenham link OU imagem."""
-    if "photo" in msg:
-        return True
+    """So distribui se a mensagem tiver um link de um dominio permitido.
+    Imagem/print sozinho (sem link permitido) NAO e distribuido."""
     text = msg.get("text") or msg.get("caption") or ""
-    return bool(LINK_RE.search(text))
+    return any(_host_allowed(link) for link in LINK_RE.findall(text))
 
 def broadcast(from_chat_id, message_id):
     groups = load_groups()
@@ -253,6 +268,8 @@ def handle(update, state):
         broadcast(SOURCE_CHAT_ID, mid)
         state["seen"] = (state["seen"] + [mid])[-MAX_SEEN:]
         save_state(state)
+    else:
+        log.info("Mensagem %s ignorada no topico fonte (sem link de %s)", mid, ALLOWED_DOMAINS)
 
 # ----------------------------------------------------------------- Boot / loop
 def drain_backlog(state):
