@@ -256,12 +256,9 @@ def maybe_monthly_report(state):
 
 # ----------------------------------------------------------------- Vinculo de parceiro (/vincular)
 VINCULAR_HELP = (
-    "Para entrar no airdrop de parceiros do Bitcoin Block:\n"
-    "1) Crie sua conta em bbdao.digital e confirme o e-mail.\n"
-    "2) Pegue seu LINK DE REFERENCIA em bbdao.digital -> Referencias (ele tem ?r=SEU_ID).\n"
-    "3) Me adicione ao seu grupo como ADMIN com permissao de postar links e imagens.\n"
-    "4) DENTRO do seu grupo, envie:  /vincular SEU_ID   (ex.: /vincular 123)\n"
-    "Pronto - seu grupo fica ligado a sua conta e o airdrop cai no seu saldo."
+    "Olá! \U0001F44B Sou o assistente do BitcoinBlock.com.br — levo notícias de "
+    "blockchain selecionadas para grupos parceiros. Tem um grupo e quer conversar "
+    "sobre uma parceria? Fale com a gente: aviso@bbdao.digital"
 )
 
 def parse_bbdao_id(arg):
