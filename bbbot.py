@@ -8,6 +8,8 @@ Fluxo:
      -> O bot se auto-registra (handler my_chat_member).
   2. Voce posta um link/imagem no topico "Artigos | Distribuicao" do grupo fonte.
      -> O bot COPIA a mensagem (link + imagem + legenda) para TODOS os grupos.
+  3. O dono roda  /vincular SEU_ID  dentro do grupo.
+     -> O bot liga o grupo a conta BBDAO do dono (airdrop de parceiros).
 
 Robustez (o que faltava na versao antiga):
   - Estado persistido em disco (offset + mensagens ja enviadas) => sem spam ao reiniciar.
@@ -46,6 +48,11 @@ API         = f"https://api.telegram.org/bot{TOKEN}"
 GROUPS_FILE = os.environ.get("GROUPS_FILE", "group_ids.json")
 STATE_FILE  = os.environ.get("STATE_FILE",  "bot_state.json")
 LOG_FILE    = os.environ.get("LOG_FILE",    "logBot.txt")
+
+# Vinculo grupo <-> conta BBDAO (comando /vincular). Sem isso, o /vincular ainda
+# grava o vinculo localmente (group_ids.json) e avisa o admin, mas NAO confirma na plataforma.
+BBDAO_API_URL = (os.environ.get("BBDAO_API_URL") or "").rstrip("/")   # ex: https://bbdao.digital/api/v1
+BBDAO_API_KEY = os.environ.get("BBDAO_API_KEY") or ""                 # = bbdao_api_key do /private/secrets.php
 
 SEND_DELAY        = float(os.environ.get("SEND_DELAY", "1.0"))  # s entre envios (folga no limite ~30/s)
 DETAILS_REFRESH_S = 24 * 3600     # atualizar metadados dos grupos 1x/dia
@@ -155,7 +162,8 @@ def register_group(chat):
         "chat_id": gid,
         "text": ("Bot Bitcoin Block conectado a este grupo. A partir de agora "
                  "voce recebe noticias selecionadas de blockchain (sem spam). "
-                 "Confirme que o bot tem permissao de enviar mensagens."),
+                 "Confirme que o bot tem permissao de enviar mensagens. "
+                 "Dono: rode  /vincular SEU_ID  para entrar no airdrop de parceiros."),
     }, http="post")
 
 def unregister_group(gid, reason=""):
@@ -240,11 +248,121 @@ def maybe_monthly_report(state):
         if groups:
             lines = ["Relatorio mensal - grupos na rede:\n"]
             for g in groups:
+                vinc = f" | BBDAO #{g['bbdao_user_id']}" if g.get("bbdao_user_id") else ""
                 lines.append(f"- {g.get('title','?')} | membros: {g.get('members_count',0)} "
-                             f"| dono: @{g.get('owner_username','?')}")
+                             f"| dono: @{g.get('owner_username','?')}{vinc}")
             notify_admin("\n".join(lines))
         state["last_report"] = tag
         save_state(state)
+
+# ----------------------------------------------------------------- Vinculo de parceiro (/vincular)
+VINCULAR_HELP = (
+    "Para entrar no airdrop de parceiros do Bitcoin Block:\n"
+    "1) Crie sua conta em bbdao.digital e confirme o e-mail.\n"
+    "2) Pegue seu LINK DE REFERENCIA em bbdao.digital -> Referencias (ele tem ?r=SEU_ID).\n"
+    "3) Me adicione ao seu grupo como ADMIN com permissao de postar links e imagens.\n"
+    "4) DENTRO do seu grupo, envie:  /vincular SEU_ID   (ex.: /vincular 123)\n"
+    "Pronto - seu grupo fica ligado a sua conta e o airdrop cai no seu saldo."
+)
+
+def parse_bbdao_id(arg):
+    """Extrai o ID numerico da conta BBDAO: aceita o numero puro (123) ou o
+    link de referencia inteiro (.../?r=123)."""
+    if not arg:
+        return None
+    m = re.search(r"[?&]r=(\d+)", arg)
+    if m:
+        return int(m.group(1))
+    m = re.fullmatch(r"\d{1,12}", arg.strip())
+    return int(m.group(0)) if m else None
+
+def is_group_admin(chat_id, user_id):
+    """True se o usuario for criador/administrador do grupo (evita que um membro
+    qualquer vincule o grupo a propria conta)."""
+    if not user_id:
+        return False
+    res = api("getChatMember", {"chat_id": chat_id, "user_id": user_id})
+    return bool(res) and res.get("status") in ("creator", "administrator")
+
+def bbdao_link(group_id, uid, title, members, owner, linked_by):
+    """Confirma o vinculo na plataforma BBDAO (POST /partners/link, X-API-Key)."""
+    if not (BBDAO_API_URL and BBDAO_API_KEY):
+        return False, "BBDAO_API_URL/BBDAO_API_KEY nao configurados"
+    try:
+        r = requests.post(
+            f"{BBDAO_API_URL}/partners/link",
+            headers={"X-API-Key": BBDAO_API_KEY, "Content-Type": "application/json"},
+            json={
+                "telegram_group_id": group_id,
+                "bbdao_user_id": uid,
+                "group_title": title,
+                "members_count": members,
+                "telegram_owner_username": owner,
+                "linked_by": linked_by,
+            },
+            timeout=20,
+        )
+        data = r.json()
+        return bool(data.get("success")), data.get("message", "")
+    except Exception as e:
+        return False, str(e)
+
+def handle_vincular(msg, arg):
+    chat = msg.get("chat", {})
+    cid  = chat.get("id")
+    if chat.get("type") not in ("group", "supergroup"):
+        api("sendMessage", {"chat_id": cid, "text":
+            "Use o /vincular DENTRO do seu grupo, onde o bot e administrador."}, http="post")
+        return
+    if cid == SOURCE_CHAT_ID:
+        return
+    uid = parse_bbdao_id(arg)
+    if not uid:
+        api("sendMessage", {"chat_id": cid, "text":
+            "Uso: /vincular SEU_ID_BBDAO\n(o numero do seu link de referencia em "
+            "bbdao.digital -> Referencias, ex.: /vincular 123)."}, http="post")
+        return
+    frm = msg.get("from", {})
+    if not is_group_admin(cid, frm.get("id")):
+        api("sendMessage", {"chat_id": cid, "text":
+            "So um administrador/dono do grupo pode vincular. Peca pro dono enviar o /vincular."}, http="post")
+        return
+    register_group(chat)   # idempotente: garante o grupo na rede
+    groups = load_groups()
+    rec = next((g for g in groups if g["group_id"] == cid), None)
+    linked_by = frm.get("username") or str(frm.get("id"))
+    title   = (rec or {}).get("title") or chat.get("title", "")
+    members = (rec or {}).get("members_count", 0)
+    owner   = (rec or {}).get("owner_username", "")
+    if rec is not None:
+        rec["bbdao_user_id"] = uid
+        rec["linked_by"]     = linked_by
+        rec["linked_at"]     = datetime.now(timezone.utc).isoformat()
+        save_groups(groups)
+    ok, info = bbdao_link(cid, uid, title, members, owner, linked_by)
+    if ok:
+        api("sendMessage", {"chat_id": cid, "text":
+            f"Grupo vinculado a conta BBDAO #{uid}. A partir de agora ele entra no airdrop "
+            f"de parceiros - acompanhe o saldo em bbdao.digital."}, http="post")
+        notify_admin(f"LINK ok: '{title}' ({cid}) -> conta BBDAO #{uid} (por @{linked_by})")
+    else:
+        api("sendMessage", {"chat_id": cid, "text":
+            "Recebido! Registramos seu vinculo; a confirmacao na plataforma sera finalizada pela equipe."},
+            http="post")
+        notify_admin(f"LINK pendente (salvo local): '{title}' ({cid}) -> BBDAO #{uid} | motivo: {info}")
+
+def handle_command(msg, text):
+    """Trata /vincular e /start. Devolve True se o comando foi reconhecido."""
+    parts = text.split()
+    cmd = parts[0].split("@")[0].lower()
+    arg = parts[1] if len(parts) > 1 else ""
+    if cmd in ("/vincular", "/vinculargrupo"):
+        handle_vincular(msg, arg)
+        return True
+    if cmd == "/start":
+        api("sendMessage", {"chat_id": msg.get("chat", {}).get("id"), "text": VINCULAR_HELP}, http="post")
+        return True
+    return False
 
 # ----------------------------------------------------------------- Handler de updates
 def handle(update, state):
@@ -260,10 +378,16 @@ def handle(update, state):
                 unregister_group(chat["id"], f"(status={status})")
         return
 
-    # 2) Mensagem no topico fonte -> distribuir
     msg = update.get("message")
     if not msg:
         return
+
+    # 1.5) Comandos (/vincular, /start) -> funcionam em qualquer chat
+    text = (msg.get("text") or "").strip()
+    if text.startswith("/") and handle_command(msg, text):
+        return
+
+    # 2) Mensagem no topico fonte -> distribuir
     if msg.get("chat", {}).get("id") != SOURCE_CHAT_ID:
         return
     if msg.get("message_thread_id") != SOURCE_THREAD:
