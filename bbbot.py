@@ -160,10 +160,9 @@ def register_group(chat):
     # boas-vindas (ignora falha se o bot ainda nao tiver permissao de postar)
     api("sendMessage", {
         "chat_id": gid,
-        "text": ("Bot Bitcoin Block conectado a este grupo. A partir de agora "
-                 "voce recebe noticias selecionadas de blockchain (sem spam). "
-                 "Confirme que o bot tem permissao de enviar mensagens. "
-                 "Dono: rode  /vincular SEU_ID  para entrar no airdrop de parceiros."),
+        "text": ("Olá! \U0001F44B A partir de agora este grupo recebe notícias de "
+                 "blockchain exclusivas e em primeira mão, direto do BitcoinBlock.com.br "
+                 "— conteúdo selecionado, sem spam."),
     }, http="post")
 
 def unregister_group(gid, reason=""):
@@ -341,13 +340,13 @@ def handle_vincular(msg, arg):
         save_groups(groups)
     ok, info = bbdao_link(cid, uid, title, members, owner, linked_by)
     if ok:
+        # Confirmacao GENERICA no grupo (nao revela airdrop nem o ID da conta aos membros).
         api("sendMessage", {"chat_id": cid, "text":
-            f"Grupo vinculado a conta BBDAO #{uid}. A partir de agora ele entra no airdrop "
-            f"de parceiros - acompanhe o saldo em bbdao.digital."}, http="post")
+            "✅ Parceria confirmada! Tudo certo do nosso lado."}, http="post")
         notify_admin(f"LINK ok: '{title}' ({cid}) -> conta BBDAO #{uid} (por @{linked_by})")
     else:
         api("sendMessage", {"chat_id": cid, "text":
-            "Recebido! Registramos seu vinculo; a confirmacao na plataforma sera finalizada pela equipe."},
+            "Recebido! Registramos seu pedido; finalizamos do nosso lado em instantes."},
             http="post")
         notify_admin(f"LINK pendente (salvo local): '{title}' ({cid}) -> BBDAO #{uid} | motivo: {info}")
 
